@@ -1,0 +1,214 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>360° VR Viewer - Unified</title>
+    <script src="https://aframe.io/releases/1.4.0/aframe.min.js"></script>
+    <style>
+        body {
+            margin: 0;
+            overflow: hidden;
+        }
+        #status {
+            position: fixed;
+            top: 10px;
+            left: 50%;
+            transform: translateX(-50%);
+            color: white;
+            font-size: 18px;
+            background: rgba(0, 0, 0, 0.5);
+            padding: 10px;
+            border-radius: 8px;
+            z-index: 10;
+        }
+        #timestamp-container {
+            position: fixed;
+            top: 10px;
+            right: 10px;
+            z-index: 999;
+            background: rgba(0, 0, 0, 0.7);
+            color: white;
+            padding: 10px;
+            border-radius: 5px;
+        }
+    </style>
+</head>
+<body>
+    <div id="status">Waiting for updates...</div>
+    <div id="timestamp-container">
+        <h3>Saved Timestamps</h3>
+        <ul id="timestamp-list" style="list-style: none; padding: 0;"></ul>
+        <input id="timestamp-input" type="datetime-local" style="margin-bottom: 5px;" />
+        <button onclick="saveCurrentView()">Save Current View</button>
+    </div>
+
+    <a-scene>
+        <!-- Camera -->
+        <a-entity id="camera-wrapper" position="0 1.6 0">
+            <a-entity 
+                id="camera" 
+                camera 
+                look-controls 
+                wasd-controls="false">
+                <a-entity 
+                    cursor="rayOrigin: mouse" 
+                    position="0 0 -1" 
+                    geometry="primitive: ring; radiusInner: 0.02; radiusOuter: 0.03"
+                    material="color: white; shader: flat">
+                </a-entity>
+            </a-entity>
+        </a-entity>
+
+        <!-- Dynamic Sphere Container -->
+        <a-entity id="image-container"></a-entity>
+    </a-scene>
+
+    <script>
+        const statusDiv = document.getElementById('status');
+        const imageContainer = document.getElementById('image-container');
+        const cameraWrapper = document.getElementById('camera-wrapper');
+        const timestampList = document.getElementById("timestamp-list");
+        const sphereRadius = 500; // Radius for 360° spheres
+        const coordinates = []; // Holds positions for navigation
+        let currentIndex = 0; // Current position index
+
+        // Virtual spaces for timestamps
+        const virtualSpaces = [];
+
+        // Fetch latest image data from server
+        async function fetchLatestImages() {
+            try {
+                const response = await fetch('/latest-images');
+                const data = await response.json();
+                console.log('Latest images:', data);
+
+                // Update spheres dynamically
+                updateSpheres(data);
+            } catch (error) {
+                console.error('Error fetching latest images:', error);
+                statusDiv.textContent = 'Error fetching updates.';
+            }
+        }
+
+        // Update 360° spheres with latest image data
+        function updateSpheres(imageData) {
+            imageContainer.innerHTML = ''; // Clear existing spheres
+            coordinates.length = 0; // Reset coordinates
+
+            Object.entries(imageData).forEach(([folder, src], index) => {
+                const sphere = document.createElement('a-sphere');
+                sphere.setAttribute('id', `sphere-${index}`);
+                sphere.setAttribute('radius', sphereRadius);
+                sphere.setAttribute('scale', '-1 1 1'); // Inverted for 360° viewing
+                sphere.setAttribute('src', src);
+                sphere.setAttribute('material', `opacity: ${index === 0 ? 1 : 0}; shader: flat;`);
+                sphere.setAttribute('position', `${index * 10} 0 0`);
+                imageContainer.appendChild(sphere);
+
+                // Track coordinates for navigation
+                coordinates.push({ x: index * 10, y: 0, z: 0 });
+
+                // Add to virtualSpaces for timestamp management
+                virtualSpaces.push({
+                    x: index * 10,
+                    y: 0,
+                    z: 0,
+                    src,
+                    timestamp: new Date().toISOString() // Default timestamp
+                });
+            });
+
+            // Reset camera position
+            if (coordinates.length > 0) {
+                cameraWrapper.setAttribute('position', '0 1.6 0');
+                currentIndex = 0;
+                statusDiv.textContent = `Now showing: ${Object.values(imageData)[0].split('/').pop()}`;
+            }
+            updateTimestampList();
+        }
+
+        // Change image with fade transition
+        function changeImageWithFade(newIndex) {
+            const currentSphere = document.getElementById(`sphere-${currentIndex}`);
+            const nextSphere = document.getElementById(`sphere-${newIndex}`);
+
+            // Fade out current sphere
+            currentSphere.setAttribute('animation', 'property: material.opacity; to: 0; dur: 1000');
+            // Fade in new sphere
+            nextSphere.setAttribute('animation', 'property: material.opacity; to: 1; dur: 1000');
+
+            // Move camera after 1 second
+            setTimeout(() => {
+                const targetCoord = coordinates[newIndex];
+                cameraWrapper.setAttribute('animation', {
+                    property: 'position',
+                    to: `${targetCoord.x} 1.6 ${targetCoord.z}`,
+                    dur: 1000,
+                    easing: 'easeInOutQuad',
+                });
+                currentIndex = newIndex; // Update current index
+                statusDiv.textContent = `Now showing: ${nextSphere.getAttribute('src').split('/').pop()}`;
+            }, 1000);
+        }
+
+        // Load virtual space by timestamp
+        const loadVirtualSpaceByTimestamp = (timestamp) => {
+            const spaceIndex = virtualSpaces.findIndex((space) => space.timestamp === timestamp);
+            if (spaceIndex !== -1) {
+                changeImageWithFade(spaceIndex);
+            } else {
+                alert("No virtual space found for this timestamp.");
+            }
+        };
+
+        // Save the current view with a new timestamp
+        const saveCurrentView = () => {
+            const timestampInput = document.getElementById("timestamp-input").value;
+            if (!timestampInput) {
+                alert("Please enter a valid timestamp.");
+                return;
+            }
+
+            const currentPosition = cameraWrapper.getAttribute("position");
+            const newSpace = {
+                x: currentPosition.x,
+                y: currentPosition.y,
+                z: currentPosition.z,
+                src: virtualSpaces[currentIndex].src, // Use current image source
+                timestamp: timestampInput,
+            };
+
+            virtualSpaces.push(newSpace);
+            updateTimestampList();
+            alert(`Saved current view at timestamp: ${timestampInput}`);
+        };
+
+        // Update timestamp list in the UI
+        const updateTimestampList = () => {
+            timestampList.innerHTML = ''; // Clear the list
+            virtualSpaces.forEach(space => {
+                const listItem = document.createElement("li");
+                listItem.textContent = space.timestamp;
+                listItem.style.cursor = "pointer";
+                listItem.onclick = () => loadVirtualSpaceByTimestamp(space.timestamp);
+                timestampList.appendChild(listItem);
+            });
+        };
+
+        // Keyboard controls for navigation
+        document.addEventListener('keydown', (event) => {
+            if (event.key === 'ArrowRight') {
+                const nextIndex = (currentIndex + 1) % coordinates.length;
+                changeImageWithFade(nextIndex);
+            } else if (event.key === 'ArrowLeft') {
+                const prevIndex = (currentIndex - 1 + coordinates.length) % coordinates.length;
+                changeImageWithFade(prevIndex);
+            }
+        });
+
+        // Fetch latest images every 2 seconds
+        setInterval(fetchLatestImages, 2000);
+    </script>
+</body>
+</html>
